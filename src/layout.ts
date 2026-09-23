@@ -45,9 +45,9 @@ interface GraphEdge {
 // Ideal spring length between two *connected* cards — tuned to the card
 // footprint (~230×170px with the preview) so linked pages settle close
 // without overlapping.
-const IDEAL_EDGE_LENGTH = 300
+const IDEAL_EDGE_LENGTH = 260
 const FR_ITERATIONS = 400
-const COMPONENT_GUTTER = 160
+const COMPONENT_GUTTER = 140
 const SINGLETON_GRID_GAP = 260
 const SINGLETON_PER_ROW = 5
 
@@ -151,15 +151,95 @@ function boundingSize(positions: Map<string, { x: number; y: number }>): {
   }
 }
 
+// Nudges apart any pair of nodes still closer than a card's footprint after
+// the force simulation has settled — the springs-and-repulsion model above
+// gives an organic *shape*, but on a dense real-world graph (a hub with a
+// dozen+ neighbours all pulling at once) it can still leave a couple of
+// cards overlapping. A handful of cheap separation passes cleans that up
+// without disturbing the overall layout it already found.
+const MIN_NODE_DISTANCE = 240
+const SEPARATION_PASSES = 40
+
+function resolveOverlaps(ids: string[], positions: Map<string, { x: number; y: number }>): void {
+  for (let pass = 0; pass < SEPARATION_PASSES; pass++) {
+    let movedAny = false
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = positions.get(ids[i])!
+        const b = positions.get(ids[j])!
+        const dx = a.x - b.x
+        const dy = a.y - b.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01
+        if (dist >= MIN_NODE_DISTANCE) continue
+        const push = (MIN_NODE_DISTANCE - dist) / 2
+        const ux = dx / dist
+        const uy = dy / dist
+        a.x += ux * push
+        a.y += uy * push
+        b.x -= ux * push
+        b.y -= uy * push
+        movedAny = true
+      }
+    }
+    if (!movedAny) break
+  }
+}
+
+// Splits a graph into topical sub-groups using label propagation: every
+// node starts in its own group, then repeatedly adopts whichever group is
+// most common among its neighbours until nothing changes. Unlike connected
+// components (which lump the *entire* graph into one blob the moment
+// anything links across topics — the normal case for real GOV.UK content,
+// where "related link" and shared destinations like "Find a legal adviser"
+// tie everything together), this finds the densely-linked neighbourhoods
+// inside that one blob, which is what actually reads as separate clusters
+// on the map. A node with no neighbours simply keeps its own label, i.e.
+// stays a singleton group — so this also replaces the old connected-
+// components split without changing that behaviour.
+function detectCommunities(ids: string[], adjacency: Map<string, string[]>): Map<string, string> {
+  const label = new Map<string, string>(ids.map((id) => [id, id]))
+  const order = [...ids].sort()
+  const maxIterations = 25
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let changed = false
+    for (const id of order) {
+      const neighbors = adjacency.get(id) ?? []
+      if (neighbors.length === 0) continue
+      const counts = new Map<string, number>()
+      for (const n of neighbors) {
+        const l = label.get(n)!
+        counts.set(l, (counts.get(l) ?? 0) + 1)
+      }
+      let best = label.get(id)!
+      let bestCount = counts.get(best) ?? 0
+      for (const [l, c] of counts) {
+        if (c > bestCount || (c === bestCount && l < best)) {
+          best = l
+          bestCount = c
+        }
+      }
+      if (best !== label.get(id)) {
+        label.set(id, best)
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+  return label
+}
+
 // Lays out a whole graph that arrives with no positions of its own — used
-// when importing a CSV that only carries titles and links. Splits the nodes
-// into connected components so unrelated clusters never overlap, runs each
-// multi-page component through the force-directed simulation above, and
-// shelf-packs the resulting clusters left to right, wrapping rows — a tight,
-// organic arrangement rather than a fixed grid of equal-sized cells. Nodes
-// with no connections at all are pulled out into their own compact grid
-// underneath, since a lone page doesn't need — and would only waste — a
-// full cluster slot to itself.
+// when importing a CSV that only carries titles and links. Detects the
+// topical sub-groups inside it (see detectCommunities above — plain
+// connected components aren't enough once "related" links tie the whole
+// graph together), runs each multi-page group through the force-directed
+// simulation above using only its own internal links, and shelf-packs the
+// resulting clusters left to right, wrapping rows — a tight, organic
+// arrangement rather than a fixed grid of equal-sized cells. Nodes with no
+// connections at all are pulled out into their own compact grid underneath,
+// since a lone page doesn't need — and would only waste — a full cluster
+// slot to itself.
 export function autoLayout(
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -175,46 +255,53 @@ export function autoLayout(
     adjacency.get(e.target)!.push(e.source)
   })
 
-  const seen = new Set<string>()
-  const components: string[][] = []
-  for (const node of nodes) {
-    if (seen.has(node.id)) continue
-    const queue = [node.id]
-    seen.add(node.id)
-    const component: string[] = []
-    while (queue.length > 0) {
-      const id = queue.shift()!
-      component.push(id)
-      for (const next of adjacency.get(id) ?? []) {
-        if (seen.has(next)) continue
-        seen.add(next)
-        queue.push(next)
-      }
-    }
-    components.push(component)
-  }
+  const ids = nodes.map((n) => n.id)
+  const labels = detectCommunities(ids, adjacency)
+  const grouped = new Map<string, string[]>()
+  ids.forEach((id) => {
+    const label = labels.get(id)!
+    if (!grouped.has(label)) grouped.set(label, [])
+    grouped.get(label)!.push(id)
+  })
 
-  const clusters = components.filter((c) => c.length > 1)
-  const singletons = components.filter((c) => c.length === 1)
-  // Largest clusters first so the map reads hub-first, left to right.
+  const clusters = [...grouped.values()].filter((c) => c.length > 1)
+  const singletons = [...grouped.values()].filter((c) => c.length === 1)
+  // Largest clusters first so the map reads hub-first, and so the greedy
+  // shelf-balancing below (which always adds to the currently narrowest
+  // shelf) seats the big ones before it has to fit the small ones in
+  // around them.
   clusters.sort((a, b) => b.length - a.length)
 
-  // Shelf-pack the clusters: place each one after the last, wrapping to a
-  // new row once a row gets too wide, so cluster size — not a fixed grid —
-  // drives the spacing.
-  const maxRowWidth = Math.max(1600, IDEAL_EDGE_LENGTH * Math.sqrt(nodes.length) * 2.2)
-  let cursorX = 0
-  let cursorY = 0
-  let rowHeight = 0
+  // Distribute the clusters across a grid of shelves rather than one long
+  // row: a handful of small clusters wrapping one-per-row would stack the
+  // whole map into a tall column, forcing the viewer to zoom out far
+  // further than is readable. Roughly sqrt(N) shelves keeps the overall
+  // canvas close to square regardless of how many clusters came out of
+  // community detection.
+  interface Shelf {
+    cursorX: number
+    height: number
+    entries: Array<{ id: string; x: number; y: number }>
+  }
+  const shelfCount = Math.max(1, Math.ceil(Math.sqrt(clusters.length)))
+  const shelves: Shelf[] = Array.from({ length: shelfCount }, () => ({
+    cursorX: 0,
+    height: 0,
+    entries: [],
+  }))
 
-  clusters.forEach((component) => {
-    const local = forceDirectedLayout(component, edges)
+  clusters.forEach((cluster) => {
+    const clusterSet = new Set(cluster)
+    const internalEdges = edges.filter((e) => clusterSet.has(e.source) && clusterSet.has(e.target))
+    const local = forceDirectedLayout(cluster, internalEdges)
+    resolveOverlaps(cluster, local)
     const size = boundingSize(local)
 
-    if (cursorX > 0 && cursorX + size.width > maxRowWidth) {
-      cursorX = 0
-      cursorY += rowHeight + COMPONENT_GUTTER
-      rowHeight = 0
+    // Add to whichever shelf is currently narrowest, so width stays balanced
+    // across shelves instead of piling everything into the first one.
+    let shelf = shelves[0]
+    for (const candidate of shelves) {
+      if (candidate.cursorX < shelf.cursorX) shelf = candidate
     }
 
     const localXs = [...local.values()].map((p) => p.x)
@@ -222,25 +309,31 @@ export function autoLayout(
     const minX = Math.min(...localXs)
     const minY = Math.min(...localYs)
 
-    component.forEach((id) => {
+    cluster.forEach((id) => {
       const p = local.get(id)!
-      positions.set(id, { x: cursorX + (p.x - minX), y: cursorY + (p.y - minY) })
+      // x is final; y is still shelf-relative until shelves are stacked below.
+      shelf.entries.push({ id, x: shelf.cursorX + (p.x - minX), y: p.y - minY })
     })
 
-    cursorX += size.width + COMPONENT_GUTTER
-    rowHeight = Math.max(rowHeight, size.height)
+    shelf.cursorX += size.width + COMPONENT_GUTTER
+    shelf.height = Math.max(shelf.height, size.height)
+  })
+
+  let shelfY = 0
+  shelves.forEach((shelf) => {
+    shelf.entries.forEach(({ id, x, y }) => positions.set(id, { x, y: y + shelfY }))
+    if (shelf.entries.length > 0) shelfY += shelf.height + COMPONENT_GUTTER
   })
 
   // Isolated pages go in their own compact grid below the clustered map.
   if (singletons.length > 0) {
-    if (cursorX > 0) cursorY += rowHeight + COMPONENT_GUTTER
-    singletons.forEach((component, i) => {
-      const id = component[0]
+    singletons.forEach((cluster, i) => {
+      const id = cluster[0]
       const col = i % SINGLETON_PER_ROW
       const row = Math.floor(i / SINGLETON_PER_ROW)
       positions.set(id, {
         x: col * SINGLETON_GRID_GAP,
-        y: cursorY + row * SINGLETON_GRID_GAP,
+        y: shelfY + row * SINGLETON_GRID_GAP,
       })
     })
   }

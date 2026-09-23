@@ -118,7 +118,7 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
       nodeTypes={nodeTypes}
       fitView
       fitViewOptions={{ padding: 0.15 }}
-      minZoom={0.3}
+      minZoom={0.1}
       maxZoom={2}
       nodesDraggable={false}
       nodesConnectable={false}

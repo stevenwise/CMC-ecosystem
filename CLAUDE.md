@@ -30,12 +30,24 @@ number of real GOV.UK owning organisations, not just the original five. The
 demo `SERVICES` array keeps its original colours because dept order of first
 appearance is unchanged. `src/csv.ts` parses the files, `src/layout.ts`'s
 `autoLayout` positions whatever graph comes out of them since CSV rows carry
-no x/y: it splits the graph into connected components, runs each multi-page
-component through a Fruchterman–Reingold force-directed simulation (nodes
-repel, edges act as springs) for an organic per-cluster shape close to how
-Content Explorer's own map reads, then shelf-packs the resulting clusters
-left to right. True singletons (no edges at all) get pulled into their own
-compact grid rather than each claiming a full cluster slot.
+no x/y.
+
+Real GOV.UK content is densely cross-linked (related links, shared hub pages
+like "Find a legal adviser") — plain connected components collapse into one
+giant blob the moment anything links across topics, which is the normal
+case, not the exception. So `autoLayout` runs label-propagation community
+detection first to find the actual topical sub-groups inside that blob, runs
+each multi-page group through a Fruchterman–Reingold force-directed
+simulation (nodes repel, edges act as springs, plus a small collision-
+resolution pass since a dense hub can still leave a couple of cards
+touching) for an organic per-cluster shape, then distributes the resulting
+clusters across a balanced grid of shelves (roughly sqrt(clusterCount) of
+them, each filled by adding to whichever is currently narrowest) so the
+overall canvas stays close to square instead of stacking into one tall
+column — that stacking is what blew the whole map past the viewer's
+`minZoom` and left most of it unreachable before this was added. True
+singletons (no edges at all) get pulled into their own compact grid rather
+than each claiming a full cluster slot.
 
 ## Stack
 
