@@ -8,7 +8,7 @@ import {
   type Relationship,
   type Service,
 } from './data'
-import { autoLayout, positionForNewHub, positionForNewSpoke } from './layout'
+import { autoLayout, positionForNewHub, positionForNewSpoke, type GuideGroup } from './layout'
 import { parseCsvTable, type CsvTable } from './csv'
 
 const GOVUK_ORIGIN = 'https://www.gov.uk'
@@ -16,13 +16,7 @@ const FALLBACK_DEPT = 'Unknown'
 
 const STORAGE_KEY = 'ecosystem-map:v1'
 
-export interface GuideGroup {
-  label: string
-  x: number
-  y: number
-  width: number
-  height: number
-}
+export type { GuideGroup }
 
 export interface MapData {
   services: Service[]
@@ -371,45 +365,6 @@ function idFromPageRow(row: Record<string, string>): string {
   return row.path?.trim() || slugFromUrl(row.url)
 }
 
-// Matches src/index.css's .service-node footprint (200–230px wide, roughly
-// 170–190px tall with the preview, pill and name) — the group box needs to
-// clear every card's actual edges, not just the point positions autoLayout
-// placed them at.
-const CARD_WIDTH = 230
-const CARD_HEIGHT = 190
-const GROUP_PADDING_X = 60
-const GROUP_PADDING_TOP = 50
-const GROUP_PADDING_BOTTOM = 30
-
-function computeGuideGroups(services: Service[], partOfGuide: Map<string, string>): GuideGroup[] {
-  const byGuide = new Map<string, Service[]>()
-  services.forEach((s) => {
-    const guide = partOfGuide.get(s.id)
-    if (!guide) return
-    if (!byGuide.has(guide)) byGuide.set(guide, [])
-    byGuide.get(guide)!.push(s)
-  })
-
-  const groups: GuideGroup[] = []
-  byGuide.forEach((members, label) => {
-    if (members.length < 2) return // not worth boxing a single page
-    const xs = members.map((s) => s.position.x)
-    const ys = members.map((s) => s.position.y)
-    const minX = Math.min(...xs)
-    const maxX = Math.max(...xs)
-    const minY = Math.min(...ys)
-    const maxY = Math.max(...ys)
-    groups.push({
-      label,
-      x: minX - GROUP_PADDING_X,
-      y: minY - GROUP_PADDING_TOP,
-      width: maxX - minX + CARD_WIDTH + GROUP_PADDING_X * 2,
-      height: maxY - minY + CARD_HEIGHT + GROUP_PADDING_TOP + GROUP_PADDING_BOTTOM,
-    })
-  })
-  return groups
-}
-
 // Builds Service[] + Relationship[] from a Content Explorer CSV export and
 // replaces the current map with it. Accepts pages.csv alone (nodes, no
 // edges), connections.csv alone (edges, with minimal stub nodes for
@@ -514,12 +469,10 @@ export function importContentExplorerCsv(
   }
 
   const serviceList = [...services.values()]
-  const positions = autoLayout(serviceList, relationships, partOfGuide)
+  const { positions, groups } = autoLayout(serviceList, relationships, partOfGuide)
   serviceList.forEach((s) => {
     s.position = positions.get(s.id) ?? { x: 0, y: 0 }
   })
-
-  const groups = computeGuideGroups(serviceList, partOfGuide)
 
   commit({ services: serviceList, relationships, groups })
 

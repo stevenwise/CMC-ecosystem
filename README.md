@@ -38,9 +38,12 @@ apps don't talk to each other otherwise:
 Importing **replaces** the current map (there's a confirm prompt, and
 "Download backup" first if you want to keep what's there). Positions aren't in
 the CSV, so pages are auto-arranged: any page that's part of a GOV.UK
-multi-part guide (the `part_of_guide` column) is drawn inside a labelled box
-with the rest of that guide, the same grouping Content Explorer's own map
-shows; everything else is clustered by how it links to other pages.
+multi-part guide (the `part_of_guide` column) is packed into a tight grid
+inside a labelled box with the rest of that guide, the same grouping Content
+Explorer's own map shows; other pages that link heavily into a guide are
+pulled in close to its box (but never inside it — only the guide's own pages
+ever appear there); everything else is clustered by how it links to other
+pages.
 Departments are read from the `owner` column and coloured dynamically — there's
 no longer a fixed list of five, so a real export with dozens of GOV.UK
 organisations works the same way the built-in demo data does.
