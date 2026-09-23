@@ -11,9 +11,10 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useMapData } from './store'
 import { ServiceNode } from './ServiceNode'
+import { GuideGroupNode } from './GuideGroupNode'
 import { buildDeptStyles, FALLBACK_DEPT_STYLE } from './data'
 
-const nodeTypes = { service: ServiceNode }
+const nodeTypes = { service: ServiceNode, 'guide-group': GuideGroupNode }
 
 // How much extra outward spread per unit of zoom above 1.0. Gentle so nodes never
 // spread far past the initial fit — just enough to feel like Google-Maps clustering easing.
@@ -26,7 +27,7 @@ interface EcosystemMapProps {
 }
 
 function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapProps) {
-  const { services, relationships } = useMapData()
+  const { services, relationships, groups } = useMapData()
   const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
 
   // Layout centre — origin of the zoom-driven fan-out effect. Recomputes when services change
@@ -70,6 +71,29 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
     }))
   }, [zoom, selectedId, services, layoutCenter, deptStyles])
 
+  // Guide-group boxes fan out the same way the cards inside them do, so the
+  // box keeps enclosing its members as the view zooms — same centre, same
+  // scale, and the box's own width/height scale with it too.
+  const groupNodes = useMemo<Node[]>(() => {
+    if (!groups || groups.length === 0) return []
+    const fan = Math.max(0, zoom - 1) * FAN_STRENGTH
+    const scale = 1 + fan
+    return groups.map((group) => ({
+      id: `group:${group.label}`,
+      type: 'guide-group',
+      position: {
+        x: layoutCenter.x + (group.x - layoutCenter.x) * scale,
+        y: layoutCenter.y + (group.y - layoutCenter.y) * scale,
+      },
+      style: { width: group.width * scale, height: group.height * scale },
+      data: { label: group.label },
+      selectable: false,
+      draggable: false,
+      focusable: false,
+      zIndex: -1,
+    }))
+  }, [groups, zoom, layoutCenter])
+
   const edges = useMemo<Edge[]>(
     () =>
       relationships.map((relationship, index) => {
@@ -111,7 +135,7 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
 
   return (
     <ReactFlow
-      nodes={nodes}
+      nodes={[...groupNodes, ...nodes]}
       edges={edges}
       onNodeClick={interactive ? handleNodeClick : undefined}
       onPaneClick={interactive ? () => onSelect(null) : undefined}

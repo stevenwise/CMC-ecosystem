@@ -206,16 +206,35 @@ function resolveOverlaps(ids: string[], positions: Map<string, { x: number; y: n
 // both miss. A node with no neighbours simply has nowhere better to move
 // to, i.e. stays a singleton group — so this also covers what connected
 // components used to handle.
-function detectCommunities(ids: string[], adjacency: Map<string, string[]>): Map<string, string> {
-  const community = new Map<string, string>(ids.map((id) => [id, id]))
+//
+// fixedGroups (from Content Explorer's own `part_of_guide` column) seeds a
+// node straight into its guide's group and excludes it from the moving
+// loop entirely, so pages GOV.UK itself already says belong to the same
+// multi-part guide always land in the same cluster — this is the actual
+// grouping Content Explorer's own map draws as a labelled box, and no
+// amount of link-topology inference recovers it as reliably as just using
+// it. Pages without a `part_of_guide` (standalone guides, forms, shared
+// destinations) are still free to move and get placed by modularity alone.
+function detectCommunities(
+  ids: string[],
+  adjacency: Map<string, string[]>,
+  fixedGroups?: Map<string, string>,
+): Map<string, string> {
+  const community = new Map<string, string>(ids.map((id) => [id, fixedGroups?.get(id) ?? id]))
   const degree = new Map<string, number>(ids.map((id) => [id, (adjacency.get(id) ?? []).length]))
   const totalDegree = [...degree.values()].reduce((sum, d) => sum + d, 0)
   const m = totalDegree / 2 // edge count (adjacency lists each edge from both ends)
   if (m === 0) return community
 
   // Total degree of every node currently in each community — the piece of
-  // the modularity formula that penalises dumping everything into one group.
-  const communityDegree = new Map<string, number>(ids.map((id) => [id, degree.get(id)!]))
+  // the modularity formula that penalises dumping everything into one
+  // group. Summed per community label rather than seeded 1:1 from `degree`,
+  // since fixedGroups means several ids can already share a starting label.
+  const communityDegree = new Map<string, number>()
+  for (const id of ids) {
+    const c = community.get(id)!
+    communityDegree.set(c, (communityDegree.get(c) ?? 0) + degree.get(id)!)
+  }
 
   const order = [...ids].sort()
   const maxPasses = 40
@@ -224,6 +243,8 @@ function detectCommunities(ids: string[], adjacency: Map<string, string[]>): Map
     let moved = false
 
     for (const id of order) {
+      if (fixedGroups?.has(id)) continue // pinned to its guide, never reconsidered
+
       const current = community.get(id)!
       const ki = degree.get(id)!
 
@@ -280,6 +301,7 @@ function detectCommunities(ids: string[], adjacency: Map<string, string[]>): Map
 export function autoLayout(
   nodes: GraphNode[],
   edges: GraphEdge[],
+  partOfGuide?: Map<string, string>,
 ): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>()
   if (nodes.length === 0) return positions
@@ -293,7 +315,7 @@ export function autoLayout(
   })
 
   const ids = nodes.map((n) => n.id)
-  const labels = detectCommunities(ids, adjacency)
+  const labels = detectCommunities(ids, adjacency, partOfGuide)
   const grouped = new Map<string, string[]>()
   ids.forEach((id) => {
     const label = labels.get(id)!

@@ -16,9 +16,27 @@ const FALLBACK_DEPT = 'Unknown'
 
 const STORAGE_KEY = 'ecosystem-map:v1'
 
+export interface GuideGroup {
+  label: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface MapData {
   services: Service[]
   relationships: Relationship[]
+  // Only ever set by a CSV import (from Content Explorer's `part_of_guide`
+  // column) — a bounding box + title per multi-part guide, so the map can
+  // draw a labelled box the way Content Explorer's own map does, since a
+  // guide's pages don't always settle into an unambiguous visual blob on
+  // proximity alone (a tree-shaped link structure spreads out into
+  // branches, which is the force layout behaving correctly, not a bug).
+  // Dropped on any manual edit — none of the mutations below carry it
+  // forward, since a hand-edited map no longer strictly matches the
+  // imported group structure.
+  groups?: GuideGroup[]
 }
 
 export interface ServiceInput {
@@ -353,6 +371,45 @@ function idFromPageRow(row: Record<string, string>): string {
   return row.path?.trim() || slugFromUrl(row.url)
 }
 
+// Matches src/index.css's .service-node footprint (200–230px wide, roughly
+// 170–190px tall with the preview, pill and name) — the group box needs to
+// clear every card's actual edges, not just the point positions autoLayout
+// placed them at.
+const CARD_WIDTH = 230
+const CARD_HEIGHT = 190
+const GROUP_PADDING_X = 60
+const GROUP_PADDING_TOP = 50
+const GROUP_PADDING_BOTTOM = 30
+
+function computeGuideGroups(services: Service[], partOfGuide: Map<string, string>): GuideGroup[] {
+  const byGuide = new Map<string, Service[]>()
+  services.forEach((s) => {
+    const guide = partOfGuide.get(s.id)
+    if (!guide) return
+    if (!byGuide.has(guide)) byGuide.set(guide, [])
+    byGuide.get(guide)!.push(s)
+  })
+
+  const groups: GuideGroup[] = []
+  byGuide.forEach((members, label) => {
+    if (members.length < 2) return // not worth boxing a single page
+    const xs = members.map((s) => s.position.x)
+    const ys = members.map((s) => s.position.y)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    groups.push({
+      label,
+      x: minX - GROUP_PADDING_X,
+      y: minY - GROUP_PADDING_TOP,
+      width: maxX - minX + CARD_WIDTH + GROUP_PADDING_X * 2,
+      height: maxY - minY + CARD_HEIGHT + GROUP_PADDING_TOP + GROUP_PADDING_BOTTOM,
+    })
+  })
+  return groups
+}
+
 // Builds Service[] + Relationship[] from a Content Explorer CSV export and
 // replaces the current map with it. Accepts pages.csv alone (nodes, no
 // edges), connections.csv alone (edges, with minimal stub nodes for
@@ -381,6 +438,11 @@ export function importContentExplorerCsv(
   }
 
   const services = new Map<string, Service>()
+  // `part_of_guide` is the same value GOV.UK's own multi-part guides use to
+  // tie their pages together — Content Explorer's map draws each one as a
+  // labelled box. It's the most reliable clustering signal available, so
+  // autoLayout treats it as authoritative wherever a page has it.
+  const partOfGuide = new Map<string, string>()
 
   for (const table of pageTables) {
     for (const row of table.rows) {
@@ -395,6 +457,9 @@ export function importContentExplorerCsv(
         summary: summaryFromPageRow(row),
         position: { x: 0, y: 0 },
       })
+      if (row.part_of_guide?.trim()) {
+        partOfGuide.set(id, row.part_of_guide.trim())
+      }
     }
   }
 
@@ -449,12 +514,14 @@ export function importContentExplorerCsv(
   }
 
   const serviceList = [...services.values()]
-  const positions = autoLayout(serviceList, relationships)
+  const positions = autoLayout(serviceList, relationships, partOfGuide)
   serviceList.forEach((s) => {
     s.position = positions.get(s.id) ?? { x: 0, y: 0 }
   })
 
-  commit({ services: serviceList, relationships })
+  const groups = computeGuideGroups(serviceList, partOfGuide)
+
+  commit({ services: serviceList, relationships, groups })
 
   return {
     ok: true,
