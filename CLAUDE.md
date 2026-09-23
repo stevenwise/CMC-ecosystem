@@ -29,8 +29,13 @@ manual upload, no live integration between the two apps) can bring in any
 number of real GOV.UK owning organisations, not just the original five. The
 demo `SERVICES` array keeps its original colours because dept order of first
 appearance is unchanged. `src/csv.ts` parses the files, `src/layout.ts`'s
-`autoLayout` positions whatever graph comes out of them (BFS rings from the
-highest-degree node per connected component) since CSV rows carry no x/y.
+`autoLayout` positions whatever graph comes out of them since CSV rows carry
+no x/y: it splits the graph into connected components, runs each multi-page
+component through a Fruchterman–Reingold force-directed simulation (nodes
+repel, edges act as springs) for an organic per-cluster shape close to how
+Content Explorer's own map reads, then shelf-packs the resulting clusters
+left to right. True singletons (no edges at all) get pulled into their own
+compact grid rather than each claiming a full cluster slot.
 
 ## Stack
 
