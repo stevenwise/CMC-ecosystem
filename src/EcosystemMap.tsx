@@ -11,10 +11,9 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useMapData } from './store'
 import { ServiceNode } from './ServiceNode'
-import { GuideGroupNode } from './GuideGroupNode'
-import { buildDeptStyles, FALLBACK_DEPT_STYLE } from './data'
+import { computeLayout } from './layout'
 
-const nodeTypes = { service: ServiceNode, 'guide-group': GuideGroupNode }
+const nodeTypes = { service: ServiceNode }
 
 // How much extra outward spread per unit of zoom above 1.0. Gentle so nodes never
 // spread far past the initial fit — just enough to feel like Google-Maps clustering easing.
@@ -27,26 +26,33 @@ interface EcosystemMapProps {
 }
 
 function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapProps) {
-  const { services, relationships, groups } = useMapData()
-  const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
+  const { services, relationships } = useMapData()
 
-  // Layout centre — origin of the zoom-driven fan-out effect. Recomputes when services change
-  // (which is rare enough — only during authoring — that this stays cheap).
+  // Automatic layout: a force pass clusters each group, then a deterministic grid
+  // tidy per group. Recomputes only when the data changes, so it stays stable
+  // across other re-renders (selection, zoom, etc.).
+  const layout = useMemo(
+    () => computeLayout(services, relationships),
+    [services, relationships],
+  )
+
+  // Layout centre — origin of the zoom-driven fan-out effect. Based on the
+  // computed positions (not the authored ones).
   const layoutCenter = useMemo(() => {
-    if (services.length === 0) return { x: 0, y: 0 }
-    const xs = services.map((s) => s.position.x)
-    const ys = services.map((s) => s.position.y)
+    const ids = Object.keys(layout)
+    if (ids.length === 0) return { x: 0, y: 0 }
+    const xs = ids.map((id) => layout[id].x)
+    const ys = ids.map((id) => layout[id].y)
     return {
       x: (Math.min(...xs) + Math.max(...xs)) / 2,
       y: (Math.min(...ys) + Math.max(...ys)) / 2,
     }
-  }, [services])
+  }, [layout])
 
   // Reactive to viewport zoom — nodes fan outward from layoutCenter as you zoom in.
   const zoom = useStore((state) => state.transform[2])
 
-  // Refit whenever the services list changes size (add / remove) so newly added
-  // pages become visible without needing to reload.
+  // Refit whenever the layout changes (add / remove a page) so the map re-frames.
   const reactFlow = useReactFlow()
   useEffect(() => {
     if (services.length === 0) return
@@ -54,45 +60,25 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
       reactFlow.fitView({ padding: 0.15, duration: 300 })
     }, 20)
     return () => window.clearTimeout(id)
-  }, [services.length, reactFlow])
+  }, [layout, services.length, reactFlow])
 
   const nodes = useMemo<Node[]>(() => {
     const fan = Math.max(0, zoom - 1) * FAN_STRENGTH
     const scale = 1 + fan
-    return services.map((service, index) => ({
-      id: service.id,
-      type: 'service',
-      position: {
-        x: layoutCenter.x + (service.position.x - layoutCenter.x) * scale,
-        y: layoutCenter.y + (service.position.y - layoutCenter.y) * scale,
-      },
-      data: { service, index, deptStyle: deptStyles[service.dept] ?? FALLBACK_DEPT_STYLE },
-      selected: service.id === selectedId,
-    }))
-  }, [zoom, selectedId, services, layoutCenter, deptStyles])
-
-  // Guide-group boxes fan out the same way the cards inside them do, so the
-  // box keeps enclosing its members as the view zooms — same centre, same
-  // scale, and the box's own width/height scale with it too.
-  const groupNodes = useMemo<Node[]>(() => {
-    if (!groups || groups.length === 0) return []
-    const fan = Math.max(0, zoom - 1) * FAN_STRENGTH
-    const scale = 1 + fan
-    return groups.map((group) => ({
-      id: `group:${group.label}`,
-      type: 'guide-group',
-      position: {
-        x: layoutCenter.x + (group.x - layoutCenter.x) * scale,
-        y: layoutCenter.y + (group.y - layoutCenter.y) * scale,
-      },
-      style: { width: group.width * scale, height: group.height * scale },
-      data: { label: group.label },
-      selectable: false,
-      draggable: false,
-      focusable: false,
-      zIndex: -1,
-    }))
-  }, [groups, zoom, layoutCenter])
+    return services.map((service, index) => {
+      const base = layout[service.id] ?? service.position // fallback if missing
+      return {
+        id: service.id,
+        type: 'service',
+        position: {
+          x: layoutCenter.x + (base.x - layoutCenter.x) * scale,
+          y: layoutCenter.y + (base.y - layoutCenter.y) * scale,
+        },
+        data: { service, index },
+        selected: service.id === selectedId,
+      }
+    })
+  }, [zoom, selectedId, services, layout, layoutCenter])
 
   const edges = useMemo<Edge[]>(
     () =>
@@ -135,14 +121,14 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
 
   return (
     <ReactFlow
-      nodes={[...groupNodes, ...nodes]}
+      nodes={nodes}
       edges={edges}
       onNodeClick={interactive ? handleNodeClick : undefined}
       onPaneClick={interactive ? () => onSelect(null) : undefined}
       nodeTypes={nodeTypes}
       fitView
       fitViewOptions={{ padding: 0.15 }}
-      minZoom={0.1}
+      minZoom={0.3}
       maxZoom={2}
       nodesDraggable={false}
       nodesConnectable={false}
