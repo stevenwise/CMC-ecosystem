@@ -1,14 +1,16 @@
 import { Handle, Position } from '@xyflow/react'
 import type { Node, NodeProps } from '@xyflow/react'
 import { motion } from 'framer-motion'
-import { DEPTS, type Service } from './data'
+import type { DeptStyle, Service } from './data'
 import { Preview } from './Preview'
 
-export type ServiceNodeType = Node<{ service: Service; index: number }, 'service'>
+export type ServiceNodeType = Node<
+  { service: Service; index: number; deptStyle: DeptStyle },
+  'service'
+>
 
 export function ServiceNode({ data, selected }: NodeProps<ServiceNodeType>) {
-  const { service, index } = data
-  const dept = DEPTS[service.dept]
+  const { service, index, deptStyle: dept } = data
 
   const floatDuration = 4.5 + (index % 4) * 0.6
   const floatDelay = 0.5 + index * 0.12
@@ -41,7 +43,9 @@ export function ServiceNode({ data, selected }: NodeProps<ServiceNodeType>) {
     >
       <Handle type="target" position={Position.Left} className="service-handle" />
       <Preview url={service.url} className="service-preview" />
-      <span className="service-dept-pill">{dept.label}</span>
+      <span className="service-dept-pill" title={dept.label}>
+        <span className="pill-label">{dept.label}</span>
+      </span>
       <span className="service-name">{service.name}</span>
       <Handle type="source" position={Position.Right} className="service-handle" />
     </motion.div>

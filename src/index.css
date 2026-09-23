@@ -272,6 +272,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   padding: 4px 10px 5px;
   background: var(--dept-soft, #e0e7ff);
   color: var(--dept-color, var(--accent-primary));
@@ -280,6 +281,13 @@ button {
   font-weight: 700;
   letter-spacing: 0.03em;
   margin-bottom: 8px;
+}
+
+.pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .service-dept-pill::before {
@@ -896,6 +904,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 220px;
   padding: 3px 9px 4px;
   background: var(--dept-soft, #e0e7ff);
   color: var(--dept-color, var(--accent-primary));

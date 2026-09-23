@@ -11,6 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useMapData } from './store'
 import { ServiceNode } from './ServiceNode'
+import { buildDeptStyles, FALLBACK_DEPT_STYLE } from './data'
 
 const nodeTypes = { service: ServiceNode }
 
@@ -26,6 +27,7 @@ interface EcosystemMapProps {
 
 function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapProps) {
   const { services, relationships } = useMapData()
+  const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
 
   // Layout centre — origin of the zoom-driven fan-out effect. Recomputes when services change
   // (which is rare enough — only during authoring — that this stays cheap).
@@ -63,10 +65,10 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
         x: layoutCenter.x + (service.position.x - layoutCenter.x) * scale,
         y: layoutCenter.y + (service.position.y - layoutCenter.y) * scale,
       },
-      data: { service, index },
+      data: { service, index, deptStyle: deptStyles[service.dept] ?? FALLBACK_DEPT_STYLE },
       selected: service.id === selectedId,
     }))
-  }, [zoom, selectedId, services, layoutCenter])
+  }, [zoom, selectedId, services, layoutCenter, deptStyles])
 
   const edges = useMemo<Edge[]>(
     () =>

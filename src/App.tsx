@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { EcosystemMap } from './EcosystemMap'
-import { DEPTS, type Service } from './data'
+import { buildDeptStyles, FALLBACK_DEPT_STYLE, type Service } from './data'
 import { Preview } from './Preview'
 import { useMapData } from './store'
 import { Editor } from './Editor'
@@ -58,7 +58,9 @@ function MapView({ onRequestEdit }: { onRequestEdit: () => void }) {
   const { services, relationships } = useMapData()
   const [selectedId, setSelectedId] = useState<string | null>('ptax')
 
+  const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
   const selected = services.find((s) => s.id === selectedId) ?? null
+  const selectedDept = selected ? (deptStyles[selected.dept] ?? FALLBACK_DEPT_STYLE) : FALLBACK_DEPT_STYLE
 
   const related = useMemo<Service[]>(() => {
     if (!selected) return []
@@ -104,12 +106,12 @@ function MapView({ onRequestEdit }: { onRequestEdit: () => void }) {
                 transition={{ duration: 0.2, ease: [0.2, 0.7, 0.2, 1] }}
                 className="detail-card"
                 style={{
-                  ['--dept-color' as string]: DEPTS[selected.dept].color,
-                  ['--dept-soft' as string]: DEPTS[selected.dept].soft,
+                  ['--dept-color' as string]: selectedDept.color,
+                  ['--dept-soft' as string]: selectedDept.soft,
                 }}
               >
                 <Preview url={selected.url} className="detail-preview" />
-                <div className="detail-dept">{DEPTS[selected.dept].label}</div>
+                <div className="detail-dept">{selectedDept.label}</div>
                 <h2 className="detail-title">{selected.name}</h2>
                 <p className="detail-summary">{selected.summary}</p>
                 {(selected.organisation || selected.party) && (

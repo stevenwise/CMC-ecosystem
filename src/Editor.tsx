@@ -1,10 +1,11 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { EcosystemMap } from './EcosystemMap'
 import {
-  DEPTS,
+  buildDeptStyles,
+  FALLBACK_DEPT_STYLE,
   ORGANISATIONS,
   PARTIES,
-  type Dept,
+  type DeptStyle,
   type Organisation,
   type Party,
   type Service,
@@ -14,6 +15,7 @@ import {
   addMainPage,
   exportAsDataTs,
   exportJson,
+  importContentExplorerCsv,
   importJson,
   removeRelationship,
   removeService,
@@ -23,12 +25,10 @@ import {
   type ServiceInput,
 } from './store'
 
-const DEPT_OPTIONS = Object.entries(DEPTS) as Array<[Dept, (typeof DEPTS)[Dept]]>
-
 const EMPTY_INPUT: ServiceInput = {
   name: '',
   url: '',
-  dept: 'hmrc',
+  dept: '',
   summary: '',
   organisation: '',
   party: '',
@@ -36,10 +36,16 @@ const EMPTY_INPUT: ServiceInput = {
 
 export function Editor() {
   const { services, relationships } = useMapData()
+  const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
+  const knownDepts = useMemo(
+    () => Object.keys(deptStyles).sort((a, b) => a.localeCompare(b)),
+    [deptStyles],
+  )
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const importFileRef = useRef<HTMLInputElement | null>(null)
+  const csvImportRef = useRef<HTMLInputElement | null>(null)
 
   function flash(kind: 'ok' | 'error', text: string) {
     setStatus({ kind, text })
@@ -68,6 +74,33 @@ export function Editor() {
     reader.readAsText(file)
   }
 
+  function handleImportCsvFiles(fileList: FileList) {
+    const files = Array.from(fileList)
+    if (files.length === 0) return
+    if (
+      !window.confirm(
+        `Import from Content Explorer and replace the current map with what's in ${
+          files.length === 1 ? 'this file' : 'these files'
+        }? This can't be undone — use "Download backup" first if you want to keep what's here.`,
+      )
+    ) {
+      return
+    }
+    Promise.all(files.map((file) => file.text().then((text) => ({ name: file.name, text }))))
+      .then((parsedFiles) => {
+        const outcome = importContentExplorerCsv(parsedFiles)
+        if (outcome.ok) {
+          const { pages, connections, skippedConnections } = outcome.stats
+          const skippedNote = skippedConnections > 0 ? `, skipped ${skippedConnections}` : ''
+          flash('ok', `Imported ${pages} pages and ${connections} connections${skippedNote}`)
+          setExpandedId(null)
+        } else {
+          flash('error', outcome.error)
+        }
+      })
+      .catch(() => flash('error', 'Could not read the selected file(s)'))
+  }
+
   async function handleCopyAsDataTs() {
     try {
       await navigator.clipboard.writeText(exportAsDataTs())
@@ -92,6 +125,11 @@ export function Editor() {
 
   return (
     <div className="editor">
+      <datalist id="dept-options">
+        {knownDepts.map((dept) => (
+          <option key={dept} value={dept} />
+        ))}
+      </datalist>
       <header className="editor-header">
         <a href="#" className="back-chip" aria-label="Back to map">
           ← Back to map
@@ -99,7 +137,8 @@ export function Editor() {
         <div className="editor-title-block">
           <h1>Ecosystem editor</h1>
           <p>
-            Add main pages and their connections. Changes save as you type.
+            Add main pages and their connections, or import a CSV exported from Content
+            Explorer's map view. Changes save as you type.
           </p>
         </div>
         {status && (
@@ -120,6 +159,13 @@ export function Editor() {
           </button>
           {advancedOpen && (
             <div className="editor-advanced-menu" role="menu">
+              <button
+                type="button"
+                onClick={() => csvImportRef.current?.click()}
+                title="Import pages.csv and/or connections.csv exported from Content Explorer's map view"
+              >
+                Import from Content Explorer (CSV)
+              </button>
               <button type="button" onClick={handleExportJson}>
                 Download backup
               </button>
@@ -173,6 +219,7 @@ export function Editor() {
                       service={service}
                       services={services}
                       relationships={relationships}
+                      deptStyles={deptStyles}
                       expanded={expandedId === service.id}
                       onToggle={() =>
                         setExpandedId(expandedId === service.id ? null : service.id)
@@ -216,6 +263,19 @@ export function Editor() {
             e.target.value = ''
           }}
         />
+        <input
+          ref={csvImportRef}
+          type="file"
+          accept=".csv,text/csv"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length > 0) {
+              handleImportCsvFiles(e.target.files)
+            }
+            e.target.value = ''
+          }}
+        />
       </footer>
     </div>
   )
@@ -227,6 +287,7 @@ interface PageRowProps {
   service: Service
   services: Service[]
   relationships: Array<{ source: string; target: string; label?: string }>
+  deptStyles: Record<string, DeptStyle>
   expanded: boolean
   onToggle: () => void
   onSelect: (id: string) => void
@@ -236,12 +297,13 @@ function PageRow({
   service,
   services,
   relationships,
+  deptStyles,
   expanded,
   onToggle,
   onSelect,
 }: PageRowProps) {
   const [editing, setEditing] = useState(false)
-  const dept = DEPTS[service.dept]
+  const dept = deptStyles[service.dept] ?? FALLBACK_DEPT_STYLE
 
   const connections = useMemo(() => {
     return relationships
@@ -275,12 +337,13 @@ function PageRow({
           </span>
           <span
             className="dept-pill"
+            title={dept.label}
             style={{
               ['--dept-color' as string]: dept.color,
               ['--dept-soft' as string]: dept.soft,
             }}
           >
-            {dept.label}
+            <span className="pill-label">{dept.label}</span>
           </span>
           <span className="page-row-name">{service.name}</span>
           <span className="page-row-count">
@@ -351,7 +414,7 @@ function PageRow({
             ) : (
               <ul className="connection-list">
                 {connections.map(({ edge, other }) => {
-                  const otherDept = DEPTS[other.dept]
+                  const otherDept = deptStyles[other.dept] ?? FALLBACK_DEPT_STYLE
                   return (
                     <li key={`${edge.source}-${edge.target}`}>
                       <button
@@ -361,12 +424,13 @@ function PageRow({
                       >
                         <span
                           className="dept-pill dept-pill-sm"
+                          title={otherDept.label}
                           style={{
                             ['--dept-color' as string]: otherDept.color,
                             ['--dept-soft' as string]: otherDept.soft,
                           }}
                         >
-                          {otherDept.label}
+                          <span className="pill-label">{otherDept.label}</span>
                         </span>
                         <span className="connection-name">{other.name}</span>
                         {edge.label && (
@@ -460,16 +524,14 @@ function AddPageForm({
         </label>
         <label className="page-form-field page-form-field-dept">
           <span>Department</span>
-          <select
+          <input
+            type="text"
+            list="dept-options"
             value={input.dept}
-            onChange={(e) => setInput({ ...input, dept: e.target.value as Dept })}
-          >
-            {DEPT_OPTIONS.map(([key, def]) => (
-              <option key={key} value={key}>
-                {def.label}
-              </option>
-            ))}
-          </select>
+            onChange={(e) => setInput({ ...input, dept: e.target.value })}
+            placeholder="e.g. HM Revenue & Customs"
+            required
+          />
         </label>
       </div>
       <label className="page-form-field">

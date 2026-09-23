@@ -19,6 +19,19 @@ Friendly, chilled — think Framer / React docs vibe rather than GDS civic-servi
 - Organic node layout, curved bezier edges, gentle idle floating motion
 - No dark masthead — a small floating title chip inside the canvas is enough
 
+## Data
+
+`Dept` is a free-form string, not a closed union — colours are assigned
+dynamically in first-seen order by `buildDeptStyles` (`src/data.ts`), not
+looked up in a fixed table. This is so the editor's CSV import (pulls
+`pages.csv` / `connections.csv` exported from Content Explorer's map view,
+manual upload, no live integration between the two apps) can bring in any
+number of real GOV.UK owning organisations, not just the original five. The
+demo `SERVICES` array keeps its original colours because dept order of first
+appearance is unchanged. `src/csv.ts` parses the files, `src/layout.ts`'s
+`autoLayout` positions whatever graph comes out of them (BFS rings from the
+highest-degree node per connected component) since CSV rows carry no x/y.
+
 ## Stack
 
 - Vite + React + TypeScript

@@ -8,7 +8,11 @@ import {
   type Relationship,
   type Service,
 } from './data'
-import { positionForNewHub, positionForNewSpoke } from './layout'
+import { autoLayout, positionForNewHub, positionForNewSpoke } from './layout'
+import { parseCsvTable, type CsvTable } from './csv'
+
+const GOVUK_ORIGIN = 'https://www.gov.uk'
+const FALLBACK_DEPT = 'Unknown'
 
 const STORAGE_KEY = 'ecosystem-map:v1'
 
@@ -133,6 +137,7 @@ function validateInput(input: ServiceInput): string | null {
   if (!input.name.trim()) return 'Name is required'
   if (!input.url.trim()) return 'URL is required'
   if (!/^https?:\/\//i.test(input.url)) return 'URL must start with http:// or https://'
+  if (!input.dept.trim()) return 'Department is required'
   return null
 }
 
@@ -311,4 +316,148 @@ export function exportAsDataTs(): string {
     })
     .join('\n')
   return `export const SERVICES: Service[] = [\n${services}\n]\n\nexport const RELATIONSHIPS: Relationship[] = [\n${relationships}\n]\n`
+}
+
+/* ---------- Import from Content Explorer CSV ---------- */
+
+export interface CsvImportStats {
+  pages: number
+  connections: number
+  skippedConnections: number
+}
+
+type CsvFileKind = 'pages' | 'connections'
+
+// Content Explorer's map export (mapExportCsv / mapExportEdgesCsv in its
+// app.js) produces pages.csv (title, path, url, owner, …) and
+// connections.csv (source_path, target_path, …). Detected by header rather
+// than filename, so it doesn't matter what the files get renamed to.
+function classifyCsv(text: string): { kind: CsvFileKind; table: CsvTable } | null {
+  const table = parseCsvTable(text)
+  if (table.header.length === 0) return null
+  const has = (col: string) => table.header.includes(col)
+  if (has('path') && has('title') && has('url')) return { kind: 'pages', table }
+  if (has('source_path') && has('target_path')) return { kind: 'connections', table }
+  return null
+}
+
+function summaryFromPageRow(row: Record<string, string>): string {
+  const parts: string[] = []
+  if (row.content_type) parts.push(row.content_type)
+  if (row.part_of_guide) parts.push(`part of "${row.part_of_guide}"`)
+  if (row.last_updated) parts.push(`updated ${row.last_updated}`)
+  return parts.join(' · ')
+}
+
+function idFromPageRow(row: Record<string, string>): string {
+  return row.path?.trim() || slugFromUrl(row.url)
+}
+
+// Builds Service[] + Relationship[] from a Content Explorer CSV export and
+// replaces the current map with it. Accepts pages.csv alone (nodes, no
+// edges), connections.csv alone (edges, with minimal stub nodes for
+// whatever they reference), or both together for the full picture — the
+// two are matched up by GOV.UK path, which both files key on.
+export function importContentExplorerCsv(
+  files: Array<{ name: string; text: string }>,
+): { ok: true; stats: CsvImportStats } | { ok: false; error: string } {
+  const pageTables: CsvTable[] = []
+  const connectionTables: CsvTable[] = []
+
+  for (const file of files) {
+    const parsed = classifyCsv(file.text)
+    if (!parsed) {
+      return {
+        ok: false,
+        error: `"${file.name}" doesn't look like a Content Explorer export — expected a pages.csv (title, path, url…) or connections.csv (source_path, target_path…).`,
+      }
+    }
+    if (parsed.kind === 'pages') pageTables.push(parsed.table)
+    else connectionTables.push(parsed.table)
+  }
+
+  if (pageTables.length === 0 && connectionTables.length === 0) {
+    return { ok: false, error: 'No CSV files selected.' }
+  }
+
+  const services = new Map<string, Service>()
+
+  for (const table of pageTables) {
+    for (const row of table.rows) {
+      if (!row.title || !row.url) continue
+      const id = idFromPageRow(row)
+      if (services.has(id)) continue
+      services.set(id, {
+        id,
+        name: row.title,
+        dept: row.owner || FALLBACK_DEPT,
+        url: row.url,
+        summary: summaryFromPageRow(row),
+        position: { x: 0, y: 0 },
+      })
+    }
+  }
+
+  const relationships: Relationship[] = []
+  let skippedConnections = 0
+
+  for (const table of connectionTables) {
+    for (const row of table.rows) {
+      const sourcePath = row.source_path
+      const targetPath = row.target_path
+      if (!sourcePath || !targetPath || sourcePath === targetPath) {
+        skippedConnections++
+        continue
+      }
+      // Fill in any node connections.csv references that no pages.csv
+      // covered — e.g. connections.csv imported on its own, or a shared
+      // destination outside the exported page set.
+      if (!services.has(sourcePath) && row.source) {
+        services.set(sourcePath, {
+          id: sourcePath,
+          name: row.source,
+          dept: row.source_type || FALLBACK_DEPT,
+          url: GOVUK_ORIGIN + sourcePath,
+          summary: row.source_type || '',
+          position: { x: 0, y: 0 },
+        })
+      }
+      if (!services.has(targetPath) && row.target) {
+        services.set(targetPath, {
+          id: targetPath,
+          name: row.target,
+          dept: row.target_type || FALLBACK_DEPT,
+          url: GOVUK_ORIGIN + targetPath,
+          summary: row.target_type || '',
+          position: { x: 0, y: 0 },
+        })
+      }
+      if (!services.has(sourcePath) || !services.has(targetPath)) {
+        skippedConnections++
+        continue
+      }
+      relationships.push({
+        source: sourcePath,
+        target: targetPath,
+        label: row.link_kind === 'related' ? 'related' : undefined,
+      })
+    }
+  }
+
+  if (services.size === 0) {
+    return { ok: false, error: 'No pages found in the selected file(s).' }
+  }
+
+  const serviceList = [...services.values()]
+  const positions = autoLayout(serviceList, relationships)
+  serviceList.forEach((s) => {
+    s.position = positions.get(s.id) ?? { x: 0, y: 0 }
+  })
+
+  commit({ services: serviceList, relationships })
+
+  return {
+    ok: true,
+    stats: { pages: serviceList.length, connections: relationships.length, skippedConnections },
+  }
 }
