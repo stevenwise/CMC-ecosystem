@@ -47,7 +47,11 @@ interface GraphEdge {
 // without overlapping.
 const IDEAL_EDGE_LENGTH = 260
 const FR_ITERATIONS = 400
-const COMPONENT_GUTTER = 140
+// At least as big as MIN_NODE_DISTANCE below — a cluster's bounding box is
+// tight to its content, so a smaller gutter than the node-collision minimum
+// let cards from two *different* clusters land closer than same-cluster
+// cards ever could.
+const COMPONENT_GUTTER = 260
 const SINGLETON_GRID_GAP = 260
 const SINGLETON_PER_ROW = 5
 
@@ -185,48 +189,81 @@ function resolveOverlaps(ids: string[], positions: Map<string, { x: number; y: n
   }
 }
 
-// Splits a graph into topical sub-groups using label propagation: every
-// node starts in its own group, then repeatedly adopts whichever group is
-// most common among its neighbours until nothing changes. Unlike connected
-// components (which lump the *entire* graph into one blob the moment
-// anything links across topics — the normal case for real GOV.UK content,
-// where "related link" and shared destinations like "Find a legal adviser"
-// tie everything together), this finds the densely-linked neighbourhoods
-// inside that one blob, which is what actually reads as separate clusters
-// on the map. A node with no neighbours simply keeps its own label, i.e.
-// stays a singleton group — so this also replaces the old connected-
-// components split without changing that behaviour.
+// Splits a graph into topical sub-groups by greedily optimising modularity
+// (the Louvain method's local-moving phase): every node starts in its own
+// group, then each node moves to whichever neighbouring group would gain it
+// the most modularity — more internal links than you'd expect by chance —
+// repeating until nothing moves. This replaces an earlier label-propagation
+// version (each node just adopts its most common neighbour's label) that
+// works fine on a sparse test graph but collapses into one giant label on a
+// graph as densely cross-linked as real GOV.UK content actually is: with
+// "related link" and shared destinations like "Find a legal adviser" tying
+// most pages together, the majority vote has nothing to stop it drifting to
+// one dominant label. Modularity gives every move an actual quality score
+// instead of a popularity contest, so it keeps finding structure a plain
+// connected-components split (one blob, the instant anything links across
+// topics) or label propagation (also one blob, once links get dense enough)
+// both miss. A node with no neighbours simply has nowhere better to move
+// to, i.e. stays a singleton group — so this also covers what connected
+// components used to handle.
 function detectCommunities(ids: string[], adjacency: Map<string, string[]>): Map<string, string> {
-  const label = new Map<string, string>(ids.map((id) => [id, id]))
-  const order = [...ids].sort()
-  const maxIterations = 25
+  const community = new Map<string, string>(ids.map((id) => [id, id]))
+  const degree = new Map<string, number>(ids.map((id) => [id, (adjacency.get(id) ?? []).length]))
+  const totalDegree = [...degree.values()].reduce((sum, d) => sum + d, 0)
+  const m = totalDegree / 2 // edge count (adjacency lists each edge from both ends)
+  if (m === 0) return community
 
-  for (let iter = 0; iter < maxIterations; iter++) {
-    let changed = false
+  // Total degree of every node currently in each community — the piece of
+  // the modularity formula that penalises dumping everything into one group.
+  const communityDegree = new Map<string, number>(ids.map((id) => [id, degree.get(id)!]))
+
+  const order = [...ids].sort()
+  const maxPasses = 40
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let moved = false
+
     for (const id of order) {
-      const neighbors = adjacency.get(id) ?? []
-      if (neighbors.length === 0) continue
-      const counts = new Map<string, number>()
-      for (const n of neighbors) {
-        const l = label.get(n)!
-        counts.set(l, (counts.get(l) ?? 0) + 1)
+      const current = community.get(id)!
+      const ki = degree.get(id)!
+
+      const linksToCommunity = new Map<string, number>()
+      for (const neighbor of adjacency.get(id) ?? []) {
+        const c = community.get(neighbor)!
+        linksToCommunity.set(c, (linksToCommunity.get(c) ?? 0) + 1)
       }
-      let best = label.get(id)!
-      let bestCount = counts.get(best) ?? 0
-      for (const [l, c] of counts) {
-        if (c > bestCount || (c === bestCount && l < best)) {
-          best = l
-          bestCount = c
+      if (linksToCommunity.size === 0) continue
+
+      // Pull id out of its current community before comparing options, so
+      // staying put is judged on the same footing as every alternative —
+      // it needs a real computed gain here, not a sentinel, or a node ends
+      // up chasing whichever neighbouring community it evaluates first
+      // even when that move actively hurts modularity.
+      communityDegree.set(current, communityDegree.get(current)! - ki)
+
+      let best = current
+      let bestGain =
+        (linksToCommunity.get(current) ?? 0) / m - (communityDegree.get(current)! * ki) / (2 * m * m)
+      for (const [c, kiIn] of linksToCommunity) {
+        if (c === current) continue
+        const gain = kiIn / m - (communityDegree.get(c)! * ki) / (2 * m * m)
+        if (gain > bestGain + 1e-12) {
+          bestGain = gain
+          best = c
         }
       }
-      if (best !== label.get(id)) {
-        label.set(id, best)
-        changed = true
+
+      communityDegree.set(best, (communityDegree.get(best) ?? 0) + ki)
+      if (best !== current) {
+        community.set(id, best)
+        moved = true
       }
     }
-    if (!changed) break
+
+    if (!moved) break
   }
-  return label
+
+  return community
 }
 
 // Lays out a whole graph that arrives with no positions of its own — used
@@ -272,37 +309,44 @@ export function autoLayout(
   // around them.
   clusters.sort((a, b) => b.length - a.length)
 
+  // Force-layout every cluster before packing, not as each one is placed —
+  // packing needs to know actual sizes up front. Community sizes can vary
+  // wildly (a handful of pages vs. dozens), and a cluster's *shape* varies
+  // just as much: a tightly cross-linked group settles into a compact
+  // blob, while a chain-like one stretches out long and thin. Sizing the
+  // grid from a raw cluster *count* — as if every cluster took up roughly
+  // the same space — let one oversized or elongated cluster blow the whole
+  // canvas out in one dimension while the rest sat mostly empty.
+  const prepared = clusters.map((cluster) => {
+    const clusterSet = new Set(cluster)
+    const internalEdges = edges.filter((e) => clusterSet.has(e.source) && clusterSet.has(e.target))
+    const local = forceDirectedLayout(cluster, internalEdges)
+    resolveOverlaps(cluster, local)
+    return { cluster, local, size: boundingSize(local) }
+  })
+
   // Distribute the clusters across a grid of shelves rather than one long
-  // row: a handful of small clusters wrapping one-per-row would stack the
-  // whole map into a tall column, forcing the viewer to zoom out far
-  // further than is readable. Roughly sqrt(N) shelves keeps the overall
-  // canvas close to square regardless of how many clusters came out of
-  // community detection.
+  // row. The row width budget comes from the clusters' total *area*, not
+  // their count, so it scales with how much space they actually need —
+  // aiming for a roughly square canvas whatever mix of cluster sizes and
+  // shapes community detection happened to find.
+  const totalArea = prepared.reduce((sum, p) => sum + p.size.width * p.size.height, 0)
+  const rowWidthBudget = Math.max(1200, Math.sqrt(totalArea) * 1.15)
+
   interface Shelf {
     cursorX: number
     height: number
     entries: Array<{ id: string; x: number; y: number }>
   }
-  const shelfCount = Math.max(1, Math.ceil(Math.sqrt(clusters.length)))
-  const shelves: Shelf[] = Array.from({ length: shelfCount }, () => ({
-    cursorX: 0,
-    height: 0,
-    entries: [],
-  }))
+  const shelves: Shelf[] = []
+  let openShelf: Shelf | null = null
 
-  clusters.forEach((cluster) => {
-    const clusterSet = new Set(cluster)
-    const internalEdges = edges.filter((e) => clusterSet.has(e.source) && clusterSet.has(e.target))
-    const local = forceDirectedLayout(cluster, internalEdges)
-    resolveOverlaps(cluster, local)
-    const size = boundingSize(local)
-
-    // Add to whichever shelf is currently narrowest, so width stays balanced
-    // across shelves instead of piling everything into the first one.
-    let shelf = shelves[0]
-    for (const candidate of shelves) {
-      if (candidate.cursorX < shelf.cursorX) shelf = candidate
+  prepared.forEach(({ cluster, local, size }) => {
+    if (!openShelf || openShelf.cursorX + size.width > rowWidthBudget) {
+      openShelf = { cursorX: 0, height: 0, entries: [] }
+      shelves.push(openShelf)
     }
+    const shelf = openShelf
 
     const localXs = [...local.values()].map((p) => p.x)
     const localYs = [...local.values()].map((p) => p.y)

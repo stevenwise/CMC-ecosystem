@@ -35,19 +35,30 @@ no x/y.
 Real GOV.UK content is densely cross-linked (related links, shared hub pages
 like "Find a legal adviser") — plain connected components collapse into one
 giant blob the moment anything links across topics, which is the normal
-case, not the exception. So `autoLayout` runs label-propagation community
-detection first to find the actual topical sub-groups inside that blob, runs
-each multi-page group through a Fruchterman–Reingold force-directed
-simulation (nodes repel, edges act as springs, plus a small collision-
-resolution pass since a dense hub can still leave a couple of cards
-touching) for an organic per-cluster shape, then distributes the resulting
-clusters across a balanced grid of shelves (roughly sqrt(clusterCount) of
-them, each filled by adding to whichever is currently narrowest) so the
-overall canvas stays close to square instead of stacking into one tall
-column — that stacking is what blew the whole map past the viewer's
-`minZoom` and left most of it unreachable before this was added. True
-singletons (no edges at all) get pulled into their own compact grid rather
-than each claiming a full cluster slot.
+case, not the exception. So `autoLayout` runs community detection first to
+find the actual topical sub-groups inside that blob: a single-pass Louvain
+(greedy modularity optimisation — each node moves to whichever neighbouring
+group gains it the most modularity, repeated to convergence). An earlier
+label-propagation version (each node just adopts its most common
+neighbour's label) looked fine on a sparse test graph but collapsed into one
+dominant label the moment the graph got as densely linked as real content
+actually is — modularity gives every move an actual quality score instead
+of a popularity contest, so it keeps finding structure label propagation
+loses in dense graphs. Each multi-page group then runs through a
+Fruchterman–Reingold force-directed simulation (nodes repel, edges act as
+springs, plus a collision-resolution pass since a dense hub can still leave
+a couple of cards touching) for an organic per-cluster shape, and the
+resulting clusters are packed left-to-right into rows sized from their
+*total area* (not a naive node count, which let one oversized or
+elongated cluster blow a naive grid out in one dimension) so the overall
+canvas stays close to square. The row gutter has to be at least the
+collision-resolution minimum distance, or cards from two adjacent clusters
+can end up closer than same-cluster cards ever could. True singletons (no
+edges at all) get pulled into their own compact grid rather than each
+claiming a full cluster slot. `minZoom` on the map is intentionally low
+(0.1) as a safety net so a very large or oddly-shaped import can still fit
+fully on screen after fit-to-view rather than being clamped and left
+partly unreachable.
 
 ## Stack
 
