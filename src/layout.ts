@@ -32,8 +32,11 @@ export interface XY {
 // --- Tuning ---------------------------------------------------------------
 // Match CARD_W / CARD_H to your real .service-node card so the grid clears the
 // cards. The cards are tall, so the grid uses separate horizontal/vertical gaps.
-const CARD_W = 300
-const CARD_H = 340
+// Real .service-node (src/index.css): max-width 230px; height is 14px top
+// padding + 90px preview + 10px margin + ~22px dept pill + 8px margin +
+// ~20-39px name (1-2 lines) + 16px bottom padding ≈ 180-200px, so 230×195.
+const CARD_W = 230
+const CARD_H = 195
 const GAP_X = 60 // horizontal gap between cards inside a group grid
 const GAP_Y = 56 // vertical gap between cards inside a group grid
 const LINK_DISTANCE = 620 // resting length of a relationship (airier = larger)

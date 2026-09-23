@@ -8,7 +8,7 @@ import {
   type Relationship,
   type Service,
 } from './data'
-import { autoLayout, positionForNewHub, positionForNewSpoke, type GuideGroup } from './layout'
+import { computeLayout, positionForNewHub, positionForNewSpoke } from './layout'
 import { parseCsvTable, type CsvTable } from './csv'
 
 const GOVUK_ORIGIN = 'https://www.gov.uk'
@@ -16,21 +16,9 @@ const FALLBACK_DEPT = 'Unknown'
 
 const STORAGE_KEY = 'ecosystem-map:v1'
 
-export type { GuideGroup }
-
 export interface MapData {
   services: Service[]
   relationships: Relationship[]
-  // Only ever set by a CSV import (from Content Explorer's `part_of_guide`
-  // column) — a bounding box + title per multi-part guide, so the map can
-  // draw a labelled box the way Content Explorer's own map does, since a
-  // guide's pages don't always settle into an unambiguous visual blob on
-  // proximity alone (a tree-shaped link structure spreads out into
-  // branches, which is the force layout behaving correctly, not a bug).
-  // Dropped on any manual edit — none of the mutations below carry it
-  // forward, since a hand-edited map no longer strictly matches the
-  // imported group structure.
-  groups?: GuideGroup[]
 }
 
 export interface ServiceInput {
@@ -393,11 +381,6 @@ export function importContentExplorerCsv(
   }
 
   const services = new Map<string, Service>()
-  // `part_of_guide` is the same value GOV.UK's own multi-part guides use to
-  // tie their pages together — Content Explorer's map draws each one as a
-  // labelled box. It's the most reliable clustering signal available, so
-  // autoLayout treats it as authoritative wherever a page has it.
-  const partOfGuide = new Map<string, string>()
 
   for (const table of pageTables) {
     for (const row of table.rows) {
@@ -412,9 +395,6 @@ export function importContentExplorerCsv(
         summary: summaryFromPageRow(row),
         position: { x: 0, y: 0 },
       })
-      if (row.part_of_guide?.trim()) {
-        partOfGuide.set(id, row.part_of_guide.trim())
-      }
     }
   }
 
@@ -469,12 +449,16 @@ export function importContentExplorerCsv(
   }
 
   const serviceList = [...services.values()]
-  const { positions, groups } = autoLayout(serviceList, relationships, partOfGuide)
+  // The map recomputes its own layout live from services + relationships
+  // (see EcosystemMap.tsx), so this is only to seed a sensible starting
+  // position for exports/backups (exportAsDataTs, exportJson) rather than
+  // leaving every imported page stacked at (0, 0).
+  const positions = computeLayout(serviceList, relationships)
   serviceList.forEach((s) => {
-    s.position = positions.get(s.id) ?? { x: 0, y: 0 }
+    s.position = positions[s.id] ?? { x: 0, y: 0 }
   })
 
-  commit({ services: serviceList, relationships, groups })
+  commit({ services: serviceList, relationships })
 
   return {
     ok: true,

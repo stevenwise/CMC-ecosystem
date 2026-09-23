@@ -12,6 +12,7 @@ import '@xyflow/react/dist/style.css'
 import { useMapData } from './store'
 import { ServiceNode } from './ServiceNode'
 import { computeLayout } from './layout'
+import { buildDeptStyles, FALLBACK_DEPT_STYLE } from './data'
 
 const nodeTypes = { service: ServiceNode }
 
@@ -27,6 +28,7 @@ interface EcosystemMapProps {
 
 function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapProps) {
   const { services, relationships } = useMapData()
+  const deptStyles = useMemo(() => buildDeptStyles(services.map((s) => s.dept)), [services])
 
   // Automatic layout: a force pass clusters each group, then a deterministic grid
   // tidy per group. Recomputes only when the data changes, so it stays stable
@@ -74,11 +76,11 @@ function MapContent({ selectedId, onSelect, interactive = true }: EcosystemMapPr
           x: layoutCenter.x + (base.x - layoutCenter.x) * scale,
           y: layoutCenter.y + (base.y - layoutCenter.y) * scale,
         },
-        data: { service, index },
+        data: { service, index, deptStyle: deptStyles[service.dept] ?? FALLBACK_DEPT_STYLE },
         selected: service.id === selectedId,
       }
     })
-  }, [zoom, selectedId, services, layout, layoutCenter])
+  }, [zoom, selectedId, services, layout, layoutCenter, deptStyles])
 
   const edges = useMemo<Edge[]>(
     () =>
